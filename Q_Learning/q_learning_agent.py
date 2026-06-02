@@ -13,7 +13,7 @@ from blackjack import Player, analyze_card
 
 FIRST_ACTIONS = ("Double", "Surrender", "Continue")
 PLAY_ACTIONS = ("Hit", "Stand")
-BET_ACTIONS = ("minimum", "half_base", "base", "double_base", "all_in")
+BET_ACTIONS = ("minimum", "half_base", "base", "double_base")
 MAX_ACTIONS = max(len(FIRST_ACTIONS), len(PLAY_ACTIONS), len(BET_ACTIONS))
 
 
@@ -97,6 +97,8 @@ class QLearningBlackJackPlayer(Player):
         base_bet: int = 100,
         final_reward_weight: float = 0.4,
         chip_reward_weight: float = 0.02,
+        survival_reward_weight: float = 0.25,
+        elimination_penalty_weight: float = 0.5,
         train: bool = True,
         seed: int | None = None,
     ):
@@ -109,6 +111,8 @@ class QLearningBlackJackPlayer(Player):
         self.base_bet = base_bet
         self.final_reward_weight = final_reward_weight
         self.chip_reward_weight = chip_reward_weight
+        self.survival_reward_weight = survival_reward_weight
+        self.elimination_penalty_weight = elimination_penalty_weight
         self.train = train
         self.random = random.Random(seed)
         self.q: dict[tuple[Any, ...], np.ndarray] = defaultdict(lambda: np.zeros(MAX_ACTIONS, dtype=np.float64))
@@ -151,7 +155,6 @@ class QLearningBlackJackPlayer(Player):
             "half_base": max(self.base_bet // 2, 1),
             "base": max(self.base_bet, 1),
             "double_base": max(self.base_bet * 2, 1),
-            "all_in": max(self.chips, 1),
         }
         return min(amounts[action], max(self.chips, 1))
 
@@ -224,7 +227,7 @@ class QLearningBlackJackPlayer(Player):
         if self.train:
             self.episode_actions.append((state, action))
 
-    def finish_game(self, rank: int, final_chips: int, player_count: int):
+    def finish_game(self, rank: int, final_chips: int, player_count: int, survived: bool):
         if not self.train or not self.episode_actions:
             return
         if player_count > 1:
@@ -232,7 +235,14 @@ class QLearningBlackJackPlayer(Player):
         else:
             rank_score = 0.0
         chip_score = (final_chips - self.initial_chips) / max(self.base_bet, 1)
-        reward = self.final_reward_weight * rank_score + self.chip_reward_weight * chip_score
+        survival_score = 1.0 if survived else 0.0
+        elimination_score = 1.0 if final_chips <= 0 else 0.0
+        reward = (
+            self.final_reward_weight * rank_score
+            + self.chip_reward_weight * chip_score
+            + self.survival_reward_weight * survival_score
+            - self.elimination_penalty_weight * elimination_score
+        )
         for state, action in self.episode_actions:
             idx = self.action_index(action)
             self.q[state][idx] += self.alpha * (reward - self.q[state][idx])
@@ -296,6 +306,8 @@ class QLearningBlackJackPlayer(Player):
             "base_bet": self.base_bet,
             "final_reward_weight": self.final_reward_weight,
             "chip_reward_weight": self.chip_reward_weight,
+            "survival_reward_weight": self.survival_reward_weight,
+            "elimination_penalty_weight": self.elimination_penalty_weight,
             "q": {k: v.tolist() for k, v in self.q.items()},
         }
         with path.open("wb") as f:
@@ -315,6 +327,8 @@ class QLearningBlackJackPlayer(Player):
             base_bet=data.get("base_bet", 100),
             final_reward_weight=data.get("final_reward_weight", 0.4),
             chip_reward_weight=data.get("chip_reward_weight", 0.02),
+            survival_reward_weight=data.get("survival_reward_weight", 0.25),
+            elimination_penalty_weight=data.get("elimination_penalty_weight", 0.5),
             train=train,
         )
         player.q = defaultdict(lambda: np.zeros(MAX_ACTIONS, dtype=np.float64))
