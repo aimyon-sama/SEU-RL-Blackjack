@@ -189,8 +189,8 @@ class QLearningBlackJackPlayer(Player):
         if state[0] == "bet":
             return values[:len(BET_ACTIONS)]
         if state[0] == "play":
-            return values[:2]
-        return values
+            return values[:len(PLAY_ACTIONS)]
+        return values[:len(FIRST_ACTIONS)]
 
     def choose(self, state: tuple[Any, ...], legal: tuple[str, ...]) -> str:
         if self.train and self.random.random() < self.epsilon:
