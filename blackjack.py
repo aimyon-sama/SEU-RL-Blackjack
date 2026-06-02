@@ -91,7 +91,9 @@ class BlackJack:
         self.position_map = {
             self.player_position[k]: k for k in range(self.player_number)}
         for pos, p in zip(self.player_position, self.players):
-            p.act({"stage": "meta", "position": pos, "chips": self.chips,"cardsets":self.deck.card_sets})
+            p.act({"stage": "meta", "position": pos,
+                  "chips": self.chips, "cardsets": self.deck.card_sets})
+        self.history_info = {}
 
     def alive_players(self):
         for pos in range(self.player_number):
@@ -105,12 +107,13 @@ class BlackJack:
             (self.player_number,), dtype=numpy.int32)
         for player, pos in self.alive_players():
             bet = player.act(
-                {"stage": "bet"})
+                {"stage": "bet", "last_round_history": self.history_info})
             if bet > self.position_chips[pos]:
                 bet = self.position_chips[pos]
             elif bet <= 0:
                 bet = 1
             self.position_bet[pos] = bet
+        self.history_info={}
 
         self.opening_state = {"stage": "opening"}
         self.player_card = {}
@@ -221,13 +224,12 @@ class BlackJack:
                                    "state": "DealerBlackJack"})
                         self.position_chips[pos] -= self.position_bet[pos]
                 continue
-            history_info = {}
             self.eliminated = numpy.zeros((self.player_number,), dtype=bool)
             self.player_points = numpy.zeros(
                 (self.player_number,), dtype=numpy.int32)
             for player, pos in self.alive_players():
-                history = self.player_act(history_info, player, pos)
-                history_info[pos] = history
+                history = self.player_act(self.history_info, player, pos)
+                self.history_info[pos] = history
 
             dpoint, dnotburst = self.dealer_turn()
             for player, pos in self.alive_players():

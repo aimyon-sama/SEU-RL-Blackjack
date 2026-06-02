@@ -43,6 +43,7 @@ class BasicStrategyPlayer(Player):
             self.pos = obs["position"]
             self.chips = obs["chips"]
         elif stage == "bet":
+            self.last_round_history = obs.get("last_round_history", {})
             return min(self.base_bet, self.chips)
         elif stage == "opening":
             self.cards = list(obs[self.pos])
@@ -177,6 +178,7 @@ class QLearningBlackJackPlayer(Player):
             self.chips = obs["chips"]
             self.card_sets = obs.get("cardsets")
         elif stage == "bet":
+            self.last_round_history = obs.get("last_round_history", {})
             return min(self.base_bet, self.chips)
         elif stage == "opening":
             self.cards = list(obs[self.pos])
@@ -209,6 +211,8 @@ class QLearningBlackJackPlayer(Player):
             pass
 
     def save(self, path: str | Path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "alpha": self.alpha,
             "gamma": self.gamma,
@@ -218,7 +222,7 @@ class QLearningBlackJackPlayer(Player):
             "base_bet": self.base_bet,
             "q": {k: v.tolist() for k, v in self.q.items()},
         }
-        with Path(path).open("wb") as f:
+        with path.open("wb") as f:
             pickle.dump(data, f)
 
     @classmethod

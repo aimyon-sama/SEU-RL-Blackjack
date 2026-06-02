@@ -30,6 +30,7 @@ class ClassicalStradegy(Player):
                 bet = 100
             print(
                 f"Pos:{self.pos}, ID:{self.id}, I have {self.chips}, I bet {bet}")
+            print(f"Last round {obs["last_round_history"]}")
             return bet
         elif obs_type == "opening":
             """
