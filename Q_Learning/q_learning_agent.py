@@ -13,6 +13,8 @@ from blackjack import Player, analyze_card
 
 FIRST_ACTIONS = ("Double", "Surrender", "Continue")
 PLAY_ACTIONS = ("Hit", "Stand")
+BET_ACTIONS = ("minimum", "half_base", "base", "double_base", "all_in")
+MAX_ACTIONS = max(len(FIRST_ACTIONS), len(PLAY_ACTIONS), len(BET_ACTIONS))
 
 
 def card_value(card: int) -> int:
@@ -93,6 +95,8 @@ class QLearningBlackJackPlayer(Player):
         epsilon_min: float = 0.02,
         epsilon_decay: float = 0.9995,
         base_bet: int = 100,
+        final_reward_weight: float = 0.4,
+        chip_reward_weight: float = 0.02,
         train: bool = True,
         seed: int | None = None,
     ):
@@ -103,20 +107,27 @@ class QLearningBlackJackPlayer(Player):
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
         self.base_bet = base_bet
+        self.final_reward_weight = final_reward_weight
+        self.chip_reward_weight = chip_reward_weight
         self.train = train
         self.random = random.Random(seed)
-        self.q: dict[tuple[Any, ...], np.ndarray] = defaultdict(lambda: np.zeros(3, dtype=np.float64))
+        self.q: dict[tuple[Any, ...], np.ndarray] = defaultdict(lambda: np.zeros(MAX_ACTIONS, dtype=np.float64))
         self.reset()
 
     def reset(self):
         self.cards: list[int] = []
         self.pending: tuple[tuple[Any, ...], str] | None = None
         self.round_bet = 1
+        self.initial_chips = 0
+        self.last_round_history: dict[Any, Any] = {}
+        self.episode_actions: list[tuple[tuple[Any, ...], str]] = []
         self.total_delta = 0
         self.rounds_finished = 0
         self.results: dict[str, int] = defaultdict(int)
 
     def legal_actions(self, stage: str) -> tuple[str, ...]:
+        if stage == "bet":
+            return BET_ACTIONS
         if stage == "first":
             actions = list(FIRST_ACTIONS)
             if self.chips < self.round_bet * 2 and "Double" in actions:
@@ -124,7 +135,34 @@ class QLearningBlackJackPlayer(Player):
             return tuple(actions)
         return PLAY_ACTIONS
 
+    def last_history_features(self) -> tuple[int, int, int, int, int]:
+        actions = [action for history in self.last_round_history.values() for action, _ in history]
+        return (
+            len(self.last_round_history),
+            actions.count("Hit"),
+            actions.count("Double"),
+            actions.count("Surrender"),
+            actions.count("Burst"),
+        )
+
+    def bet_amount(self, action: str) -> int:
+        amounts = {
+            "minimum": 1,
+            "half_base": max(self.base_bet // 2, 1),
+            "base": max(self.base_bet, 1),
+            "double_base": max(self.base_bet * 2, 1),
+            "all_in": max(self.chips, 1),
+        }
+        return min(amounts[action], max(self.chips, 1))
+
     def state(self, stage: str) -> tuple[Any, ...]:
+        if stage == "bet":
+            return (
+                stage,
+                min(self.chips // max(self.base_bet, 1), 20),
+                getattr(self, "pos", -1),
+                *self.last_history_features(),
+            )
         points, not_bust, is_soft, is_blackjack = analyze_card(self.cards)
         points = min(points, 22)
         return (
@@ -140,12 +178,16 @@ class QLearningBlackJackPlayer(Player):
         )
 
     def action_index(self, action: str) -> int:
+        if action in BET_ACTIONS:
+            return BET_ACTIONS.index(action)
         if action in FIRST_ACTIONS:
             return FIRST_ACTIONS.index(action)
         return PLAY_ACTIONS.index(action)
 
     def q_values(self, state: tuple[Any, ...]) -> np.ndarray:
         values = self.q[state]
+        if state[0] == "bet":
+            return values[:len(BET_ACTIONS)]
         if state[0] == "play":
             return values[:2]
         return values
@@ -154,7 +196,14 @@ class QLearningBlackJackPlayer(Player):
         if self.train and self.random.random() < self.epsilon:
             return self.random.choice(legal)
         values = self.q_values(state).copy()
-        all_actions = FIRST_ACTIONS if state[0] == "first" else PLAY_ACTIONS
+        if state[0] == "bet":
+            all_actions = BET_ACTIONS
+            if np.all(values == 0):
+                return "base"
+        elif state[0] == "first":
+            all_actions = FIRST_ACTIONS
+        else:
+            all_actions = PLAY_ACTIONS
         illegal = set(all_actions) - set(legal)
         for action in illegal:
             values[self.action_index(action)] = -np.inf
@@ -171,30 +220,55 @@ class QLearningBlackJackPlayer(Player):
         self.q[state][idx] += self.alpha * (target - self.q[state][idx])
         self.pending = None
 
+    def remember(self, state: tuple[Any, ...], action: str):
+        if self.train:
+            self.episode_actions.append((state, action))
+
+    def finish_game(self, rank: int, final_chips: int, player_count: int):
+        if not self.train or not self.episode_actions:
+            return
+        if player_count > 1:
+            rank_score = 1.0 - 2.0 * ((rank - 1) / (player_count - 1))
+        else:
+            rank_score = 0.0
+        chip_score = (final_chips - self.initial_chips) / max(self.base_bet, 1)
+        reward = self.final_reward_weight * rank_score + self.chip_reward_weight * chip_score
+        for state, action in self.episode_actions:
+            idx = self.action_index(action)
+            self.q[state][idx] += self.alpha * (reward - self.q[state][idx])
+        self.episode_actions.clear()
+
     def act(self, obs: dict[str, Any]):
         stage = obs["stage"]
         if stage == "meta":
             self.pos = obs["position"]
             self.chips = obs["chips"]
+            self.initial_chips = obs["chips"]
             self.card_sets = obs.get("cardsets")
         elif stage == "bet":
             self.last_round_history = obs.get("last_round_history", {})
-            return min(self.base_bet, self.chips)
+            state = self.state("bet")
+            action = self.choose(state, self.legal_actions("bet"))
+            self.pending = (state, action)
+            self.remember(state, action)
+            return self.bet_amount(action)
         elif stage == "opening":
             self.cards = list(obs[self.pos])
             self.round_bet = max(int(obs[f"bet_{self.pos}"]), 1)
             self.dealer = card_value(obs["dealer"])
-            self.pending = None
         elif stage == "first_act":
             state = self.state("first")
+            self.update(0.0, state)
             action = self.choose(state, self.legal_actions("first"))
             self.pending = (state, action)
+            self.remember(state, action)
             return action
         elif stage == "act":
             state = self.state("play")
             self.update(0.0, state)
             action = self.choose(state, PLAY_ACTIONS)
             self.pending = (state, action)
+            self.remember(state, action)
             return action
         elif stage == "deal":
             self.cards.append(obs["card"])
@@ -220,6 +294,8 @@ class QLearningBlackJackPlayer(Player):
             "epsilon_min": self.epsilon_min,
             "epsilon_decay": self.epsilon_decay,
             "base_bet": self.base_bet,
+            "final_reward_weight": self.final_reward_weight,
+            "chip_reward_weight": self.chip_reward_weight,
             "q": {k: v.tolist() for k, v in self.q.items()},
         }
         with path.open("wb") as f:
@@ -237,9 +313,14 @@ class QLearningBlackJackPlayer(Player):
             epsilon_min=data.get("epsilon_min", 0.02),
             epsilon_decay=data.get("epsilon_decay", 0.9995),
             base_bet=data.get("base_bet", 100),
+            final_reward_weight=data.get("final_reward_weight", 0.4),
+            chip_reward_weight=data.get("chip_reward_weight", 0.02),
             train=train,
         )
-        player.q = defaultdict(lambda: np.zeros(3, dtype=np.float64))
+        player.q = defaultdict(lambda: np.zeros(MAX_ACTIONS, dtype=np.float64))
         for key, value in data["q"].items():
-            player.q[key] = np.array(value, dtype=np.float64)
+            arr = np.array(value, dtype=np.float64)
+            if arr.shape[0] < MAX_ACTIONS:
+                arr = np.pad(arr, (0, MAX_ACTIONS - arr.shape[0]))
+            player.q[key] = arr
         return player

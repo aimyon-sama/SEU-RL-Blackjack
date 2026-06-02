@@ -223,6 +223,12 @@ class BlackJack:
                         player.act({"stage": "finish", "chips": -self.position_bet[pos],
                                    "state": "DealerBlackJack"})
                         self.position_chips[pos] -= self.position_bet[pos]
+                alive = self.position_chips > 0
+                fail = ~alive & self.pos_alivestate
+                if numpy.any(fail):
+                    self.pos_rank[fail] = r - self.rounds
+                self.pos_alivestate &= alive
+                self.check_deck()
                 continue
             self.eliminated = numpy.zeros((self.player_number,), dtype=bool)
             self.player_points = numpy.zeros(

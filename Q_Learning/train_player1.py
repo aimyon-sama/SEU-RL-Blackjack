@@ -26,6 +26,8 @@ def make_self_play_players(args: argparse.Namespace) -> list[QLearningBlackJackP
             epsilon_min=args.epsilon_min,
             epsilon_decay=args.epsilon_decay,
             base_bet=args.base_bet,
+            final_reward_weight=args.final_reward_weight,
+            chip_reward_weight=args.chip_reward_weight,
             train=True,
             seed=args.seed + player_id,
         )
@@ -47,6 +49,8 @@ def make_basic_opponent_players(args: argparse.Namespace) -> list[QLearningBlack
             epsilon_min=args.epsilon_min,
             epsilon_decay=args.epsilon_decay,
             base_bet=args.base_bet,
+            final_reward_weight=args.final_reward_weight,
+            chip_reward_weight=args.chip_reward_weight,
             train=True,
             seed=args.seed,
         )
@@ -60,6 +64,10 @@ def run_game(players: list[QLearningBlackJackPlayer | BasicStrategyPlayer], args
     else:
         with contextlib.redirect_stdout(io.StringIO()):
             ranks = game.run()
+    for index, player in enumerate(players):
+        if isinstance(player, QLearningBlackJackPlayer):
+            final_chips = int(game.position_chips[game.player_position[index]])
+            player.finish_game(int(ranks[index]), final_chips, len(players))
     return ranks
 
 
@@ -78,6 +86,8 @@ def main():
     parser.add_argument("--epsilon", type=float, default=0.25)
     parser.add_argument("--epsilon-min", type=float, default=0.02)
     parser.add_argument("--epsilon-decay", type=float, default=0.9995)
+    parser.add_argument("--final-reward-weight", type=float, default=0.4)
+    parser.add_argument("--chip-reward-weight", type=float, default=0.02)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--save", type=Path, default=Path(__file__).with_name("model") / "player1_q_model.pkl")
     parser.add_argument("--verbose", action="store_true")
