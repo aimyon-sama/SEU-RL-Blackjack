@@ -99,6 +99,7 @@ class QLearningBlackJackPlayer(Player):
         chip_reward_weight: float = 0.02,
         survival_reward_weight: float = 0.25,
         elimination_penalty_weight: float = 0.5,
+        burst_penalty_weight: float = 0.0,
         train: bool = True,
         seed: int | None = None,
     ):
@@ -113,6 +114,7 @@ class QLearningBlackJackPlayer(Player):
         self.chip_reward_weight = chip_reward_weight
         self.survival_reward_weight = survival_reward_weight
         self.elimination_penalty_weight = elimination_penalty_weight
+        self.burst_penalty_weight = burst_penalty_weight
         self.train = train
         self.random = random.Random(seed)
         self.q: dict[tuple[Any, ...], np.ndarray] = defaultdict(lambda: np.zeros(MAX_ACTIONS, dtype=np.float64))
@@ -284,6 +286,8 @@ class QLearningBlackJackPlayer(Player):
             self.cards.append(obs["card"])
         elif stage == "finish":
             reward = float(obs["chips"]) / float(self.round_bet)
+            if obs["state"] == "Burst":
+                reward -= self.burst_penalty_weight
             self.update(reward, None)
             self.chips += obs["chips"]
             self.total_delta += obs["chips"]
@@ -308,6 +312,7 @@ class QLearningBlackJackPlayer(Player):
             "chip_reward_weight": self.chip_reward_weight,
             "survival_reward_weight": self.survival_reward_weight,
             "elimination_penalty_weight": self.elimination_penalty_weight,
+            "burst_penalty_weight": self.burst_penalty_weight,
             "q": {k: v.tolist() for k, v in self.q.items()},
         }
         with path.open("wb") as f:
@@ -329,6 +334,7 @@ class QLearningBlackJackPlayer(Player):
             chip_reward_weight=data.get("chip_reward_weight", 0.02),
             survival_reward_weight=data.get("survival_reward_weight", 0.25),
             elimination_penalty_weight=data.get("elimination_penalty_weight", 0.5),
+            burst_penalty_weight=data.get("burst_penalty_weight", 0.0),
             train=train,
         )
         player.q = defaultdict(lambda: np.zeros(MAX_ACTIONS, dtype=np.float64))

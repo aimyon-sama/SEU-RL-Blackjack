@@ -16,25 +16,48 @@ from blackjack import BlackJack
 from q_learning_agent import BasicStrategyPlayer, QLearningBlackJackPlayer
 
 
+def apply_training_config(player: QLearningBlackJackPlayer, args: argparse.Namespace, seed: int | None = None):
+    player.alpha = args.alpha
+    player.gamma = args.gamma
+    player.epsilon = args.epsilon
+    player.epsilon_min = args.epsilon_min
+    player.epsilon_decay = args.epsilon_decay
+    player.base_bet = args.base_bet
+    player.final_reward_weight = args.final_reward_weight
+    player.chip_reward_weight = args.chip_reward_weight
+    player.survival_reward_weight = args.survival_reward_weight
+    player.elimination_penalty_weight = args.elimination_penalty_weight
+    player.burst_penalty_weight = args.burst_penalty_weight
+    player.train = True
+    if seed is not None:
+        player.random.seed(seed)
+
+
+def make_learner(player_id: int, args: argparse.Namespace, seed: int) -> QLearningBlackJackPlayer:
+    if args.init_model is not None:
+        player = QLearningBlackJackPlayer.load(args.init_model, id=player_id, train=True)
+        apply_training_config(player, args, seed)
+        return player
+    return QLearningBlackJackPlayer(
+        player_id,
+        alpha=args.alpha,
+        gamma=args.gamma,
+        epsilon=args.epsilon,
+        epsilon_min=args.epsilon_min,
+        epsilon_decay=args.epsilon_decay,
+        base_bet=args.base_bet,
+        final_reward_weight=args.final_reward_weight,
+        chip_reward_weight=args.chip_reward_weight,
+        survival_reward_weight=args.survival_reward_weight,
+        elimination_penalty_weight=args.elimination_penalty_weight,
+        burst_penalty_weight=args.burst_penalty_weight,
+        train=True,
+        seed=seed,
+    )
+
+
 def make_self_play_players(args: argparse.Namespace) -> list[QLearningBlackJackPlayer]:
-    players = [
-        QLearningBlackJackPlayer(
-            player_id,
-            alpha=args.alpha,
-            gamma=args.gamma,
-            epsilon=args.epsilon,
-            epsilon_min=args.epsilon_min,
-            epsilon_decay=args.epsilon_decay,
-            base_bet=args.base_bet,
-            final_reward_weight=args.final_reward_weight,
-            chip_reward_weight=args.chip_reward_weight,
-            survival_reward_weight=args.survival_reward_weight,
-            elimination_penalty_weight=args.elimination_penalty_weight,
-            train=True,
-            seed=args.seed + player_id,
-        )
-        for player_id in range(args.players)
-    ]
+    players = [make_learner(player_id, args, args.seed + player_id) for player_id in range(args.players)]
     shared_q = players[0].q
     for player in players[1:]:
         player.q = shared_q
@@ -42,23 +65,22 @@ def make_self_play_players(args: argparse.Namespace) -> list[QLearningBlackJackP
 
 
 def make_basic_opponent_players(args: argparse.Namespace) -> list[QLearningBlackJackPlayer | BasicStrategyPlayer]:
-    return [
-        QLearningBlackJackPlayer(
-            0,
-            alpha=args.alpha,
-            gamma=args.gamma,
-            epsilon=args.epsilon,
-            epsilon_min=args.epsilon_min,
-            epsilon_decay=args.epsilon_decay,
-            base_bet=args.base_bet,
-            final_reward_weight=args.final_reward_weight,
-            chip_reward_weight=args.chip_reward_weight,
-            survival_reward_weight=args.survival_reward_weight,
-            elimination_penalty_weight=args.elimination_penalty_weight,
-            train=True,
-            seed=args.seed,
-        )
-    ] + [BasicStrategyPlayer(i + 1, args.base_bet) for i in range(args.players - 1)]
+    return [make_learner(0, args, args.seed)] + [BasicStrategyPlayer(i + 1, args.base_bet) for i in range(args.players - 1)]
+
+
+def make_history_pool_players(args: argparse.Namespace) -> list[QLearningBlackJackPlayer | BasicStrategyPlayer]:
+    opponent_models = args.opponent_models or []
+    if 1 + len(opponent_models) > args.players:
+        raise ValueError("--players must be at least 1 + len(--opponent-models)")
+
+    players: list[QLearningBlackJackPlayer | BasicStrategyPlayer] = [make_learner(0, args, args.seed)]
+    for model in opponent_models:
+        opponent = QLearningBlackJackPlayer.load(model, id=len(players), train=False)
+        opponent.base_bet = args.base_bet
+        players.append(opponent)
+    while len(players) < args.players:
+        players.append(BasicStrategyPlayer(len(players), args.base_bet))
+    return players
 
 
 def run_game(players: list[QLearningBlackJackPlayer | BasicStrategyPlayer], args: argparse.Namespace) -> np.ndarray:
@@ -92,10 +114,13 @@ def main():
     parser.add_argument("--epsilon", type=float, default=0.25)
     parser.add_argument("--epsilon-min", type=float, default=0.02)
     parser.add_argument("--epsilon-decay", type=float, default=0.9995)
-    parser.add_argument("--final-reward-weight", type=float, default=0.4)
-    parser.add_argument("--chip-reward-weight", type=float, default=0.02)
-    parser.add_argument("--survival-reward-weight", type=float, default=0.25)
-    parser.add_argument("--elimination-penalty-weight", type=float, default=0.5)
+    parser.add_argument("--final-reward-weight", type=float, default=0.5)
+    parser.add_argument("--chip-reward-weight", type=float, default=0.03)
+    parser.add_argument("--survival-reward-weight", type=float, default=0.05)
+    parser.add_argument("--elimination-penalty-weight", type=float, default=0.2)
+    parser.add_argument("--burst-penalty-weight", type=float, default=0.1)
+    parser.add_argument("--init-model", type=Path)
+    parser.add_argument("--opponent-models", type=Path, nargs="*", default=[])
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--save", type=Path, default=Path(__file__).with_name("model") / "player1_q_model.pkl")
     parser.add_argument("--verbose", action="store_true")
@@ -104,8 +129,17 @@ def main():
     if args.players < 1:
         raise ValueError("--players must be at least 1")
 
-    players = make_self_play_players(args) if args.mode == "self-play" else make_basic_opponent_players(args)
+    if args.opponent_models:
+        players = make_history_pool_players(args)
+    elif args.mode == "self-play":
+        players = make_self_play_players(args)
+    else:
+        players = make_basic_opponent_players(args)
     learner = players[0]
+    if args.init_model is not None:
+        print(f"init_model={args.init_model}")
+    if args.opponent_models:
+        print(f"opponent_models={[str(model) for model in args.opponent_models]}")
 
     rank_sum = 0
     chips_sum = 0
